@@ -470,4 +470,51 @@ void init_conformers(pybind11::module& m) {
       <class 'numpy.ndarray'>
     )delim"
   );
+
+  dg.def(
+    "generate_g2s_conformation",
+    [](
+      const Molecule& molecule,
+      const Eigen::MatrixXd& distancebounds,
+      const unsigned seed,
+      const DistanceGeometry::Configuration& config
+    ) -> ConformerVariantType {
+      return variantCast(
+        generateG2SConformation(molecule, distancebounds, seed, config)
+      );
+    },
+    pybind11::arg("molecule"),
+    pybind11::arg("distance_bounds"),
+    pybind11::arg("seed"),
+    pybind11::arg("configuration") = DistanceGeometry::Configuration {},
+    R"delim(
+      Generate 3D positions for a molecule.
+
+      In the case of a molecule that does not have unassigned
+      stereopermutators, this is akin to generating a conformer.
+      If there are unassigned stereopermutators, these are assigned at random
+      (consistent with relative statistical occurrences of stereopermutations)
+      for each structure. If, for instance, your molecules contains a single
+      unassigned asymmetric tetrahedron atom stereopermutator, the resulting
+      conformation will be one of both assignments.
+
+      :param molecule: Molecule to generate positions for. May not contain
+        stereopermutators with zero assignments (no feasible stereopermutations).
+      :param seed: Seed with which to initialize a PRNG with for the conformer
+        generation procedure.
+      :param configuration: Detailed Distance Geometry settings. Defaults are
+        usually fine.
+      :param distance_bounds: Pre-defined distance bounds matrix.
+      :rtype: Either a position result or an error string explaining why
+        conformer generation failed.
+
+      >>> # Generate a single conformation
+      >>> mol = io.experimental.from_smiles("N[C@](Br)(O)F")
+      >>> conformation = generate_conformation(mol, 110)
+      >>> isinstance(conformation, Error) # Did the conformer generation fail?
+      False
+      >>> type(conformation) # Successful results have matrix type:
+      <class 'numpy.ndarray'>
+    )delim"
+  );
 }

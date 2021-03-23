@@ -100,5 +100,24 @@ outcome::result<Utils::PositionCollection> generateConformation(
   return wrapperResult.as_failure();
 }
 
+outcome::result<Utils::PositionCollection> generateG2SConformation(
+  const Molecule& molecule,
+  const Eigen::MatrixXd& distancebounds,
+  const unsigned seed,
+  const DistanceGeometry::Configuration& configuration
+) {
+  auto result = DistanceGeometry::runG2S(molecule, distancebounds, 1, configuration, seed);
+
+  assert(result.size() == 1);
+  auto& wrapperResult = result.front();
+
+  if(wrapperResult) {
+    return wrapperResult.value().getBohr();
+  }
+
+  return wrapperResult.as_failure();
+}
+
+
 } // namespace Molassembler
 } // namespace Scine

@@ -552,6 +552,73 @@ outcome::result<AngstromPositions> generateConformer(
   );
 }
 
+outcome::result<AngstromPositions> generateG2SConformation(
+  const Molecule& molecule,
+  const Eigen::MatrixXd& distancebounds,
+  const Configuration& configuration,
+  std::shared_ptr<MoleculeDGInformation>& DgDataPtr,
+  bool regenerateDGDataEachStep,
+  Random::Engine& engine
+) {
+  if(regenerateDGDataEachStep) {
+    auto moleculeCopy = Detail::narrow(molecule, engine);
+
+    if(moleculeCopy.stereopermutators().hasZeroAssignmentStereopermutators()) {
+      return DgError::ZeroAssignmentStereopermutators;
+    }
+
+    DgDataPtr = std::make_shared<MoleculeDGInformation>(
+      gatherDGInformation(moleculeCopy, configuration)
+    );
+  }
+
+  ExplicitBoundsGraph explicitGraph {
+    molecule.graph().inner(),
+    distancebounds
+  };
+
+  // Get distance bounds matrix from the graph
+  auto distanceBoundsResult = explicitGraph.makeDistanceBounds();
+  if(!distanceBoundsResult) {
+    return distanceBoundsResult.as_failure();
+  }
+
+  std::cout << distanceBoundsResult << std::endl;
+
+
+  DistanceBoundsMatrix distanceBounds {std::move(distanceBoundsResult.value())};
+
+  /* There should be no need to smooth the distance bounds, because the graph
+   * type ought to create them within the triangle inequality bounds:
+   */
+  assert(distanceBounds.boundInconsistencies() == 0);
+
+  // Generate a distances matrix from the graph
+  auto distanceMatrixResult = explicitGraph.makeDistanceMatrix(
+    engine,
+    configuration.partiality
+  );
+  if(!distanceMatrixResult) {
+    return distanceMatrixResult.as_failure();
+  }
+
+  // Make a metric matrix from the distances matrix
+  MetricMatrix metric(
+    std::move(distanceMatrixResult.value())
+  );
+
+  // Get a position matrix by embedding the metric matrix
+  auto embeddedPositions = metric.embed();
+
+  /* Refinement */
+  return refine(
+    std::move(embeddedPositions),
+    distanceBounds,
+    configuration,
+    DgDataPtr
+  );
+}
+
 std::vector<
   outcome::result<AngstromPositions>
 > run(
@@ -653,6 +720,128 @@ std::vector<
       // Generate the conformer
       auto conformerResult = generateConformer(
         molecule,
+        configuration,
+        DgDataPtr,
+        regenerateEachStep,
+        engine
+      );
+
+      results.at(i) = std::move(conformerResult);
+    } catch(std::exception& e) {
+#pragma omp critical(outputWarning)
+      {
+        std::cerr << "WARNING: Uncaught exception in conformer generation: " << e.what() << "\n";
+      }
+      results.at(i) = DgError::UnknownException;
+    } // end catch
+  } // end pragma omp for private(DgDataPtr)
+
+  return results;
+}
+
+std::vector<
+  outcome::result<AngstromPositions>
+> runG2S(
+  const Molecule& molecule,
+  const Eigen::MatrixXd&distancebounds,
+  const unsigned numConformers,
+  const Configuration& configuration,
+  const boost::optional<unsigned> seedOption
+) {
+  using ReturnType = std::vector<
+    outcome::result<AngstromPositions>
+  >;
+
+  // In case there are zero assignment stereopermutators, we give up immediately
+  if(molecule.stereopermutators().hasZeroAssignmentStereopermutators()) {
+    return ReturnType(numConformers, DgError::ZeroAssignmentStereopermutators);
+  }
+
+#ifdef _OPENMP
+  /* Ensure the molecule's mutable properties are already generated so none are
+   * generated on threaded const-access.
+   */
+  molecule.graph().inner().populateProperties();
+#endif
+
+  /* In case the molecule has unassigned stereopermutators, we need to randomly
+   * assign them for each conformer generated prior to generating the distance
+   * bounds matrix. If not, then modelling data can be kept across all
+   * conformer generation runs since no randomness has entered the equation.
+   */
+  auto DgDataPtr = std::make_shared<MoleculeDGInformation>();
+  bool regenerateEachStep = molecule.stereopermutators().hasUnassignedStereopermutators();
+  if(!regenerateEachStep) {
+    *DgDataPtr = gatherDGInformation(molecule, configuration);
+  }
+
+  ReturnType results(numConformers, static_cast<DgError>(0));
+
+  /* If a seed is supplied, the global prng state is not to be advanced.
+   * We create a random engine from the seed here if a seed is supplied.
+   */
+  auto engineOption = Temple::Optionals::map(
+    seedOption,
+    [](unsigned seed) { return Random::Engine(seed); }
+  );
+
+  /* Now we need something referencing either our new engine or the global prng
+   * engine.
+   */
+  std::reference_wrapper<Random::Engine> backgroundEngineWrapper = randomnessEngine();
+  if(engineOption) {
+    backgroundEngineWrapper = engineOption.value();
+  }
+  Random::Engine& backgroundEngine = backgroundEngineWrapper.get();
+
+  /* We have to distribute pseudo-randomness into each thread reproducibly
+   * and want to avoid having to guard the global PRNG against access from
+   * multiple threads, so we provide each thread its own Engine and pre-generate
+   * each conformer's individual seed in the sequential section.
+   */
+#ifdef _OPENMP
+  const unsigned nThreads = omp_get_max_threads();
+#else
+  const unsigned nThreads = 1;
+#endif
+
+  std::vector<Random::Engine> randomnessEngines(nThreads);
+  const auto seeds = Temple::Random::getN<int>(
+    0,
+    std::numeric_limits<int>::max(),
+    numConformers,
+    backgroundEngine
+  );
+
+  /* Each thread has its own DgDataPtr, for the following reason: If we do
+   * not need to regenerate the SpatialModel data, then having all threads
+   * share access the underlying data to generate conformers is fine. If,
+   * otherwise, we do need to regenerate the SpatialModel data for each
+   * conformer, then each thread will reset its pointer to its self-generated
+   * SpatialModel data, creating thread-private state.
+   */
+#pragma omp parallel for firstprivate(DgDataPtr) schedule(dynamic)
+  for(unsigned i = 0; i < numConformers; ++i) {
+    // Get thread-specific randomness engine reference
+#ifdef _OPENMP
+    Random::Engine& engine = randomnessEngines.at(
+      omp_get_thread_num()
+    );
+#else
+    Random::Engine& engine = randomnessEngines.front();
+#endif
+
+    // Re-seed the thread-local PRNG engine for each conformer
+    engine.seed(seeds.at(i));
+
+    /* We have to handle any and all exceptions here bceause this is a parallel
+     * environment and exceptions are not propagated anywhere
+     */
+    try {
+      // Generate the conformer
+      auto conformerResult = generateG2SConformation(
+        molecule,
+        distancebounds,
         configuration,
         DgDataPtr,
         regenerateEachStep,

@@ -20,6 +20,7 @@ namespace Molassembler {
 namespace outcome = OUTCOME_V2_NAMESPACE;
 
 namespace DistanceGeometry {
+
 namespace Detail {
 
 /*! @brief Collects four-dimensional linear positions into three-dimensional matrix
@@ -116,6 +117,15 @@ outcome::result<AngstromPositions> generateConformer(
   Random::Engine& engine
 );
 
+outcome::result<AngstromPositions> generateG2SConformation(
+  const Molecule& molecule,
+  const Eigen::MatrixXd& distancebounds,
+  const Configuration& configuration,
+  std::shared_ptr<MoleculeDGInformation>& DgDataPtr,
+  bool regenerateDGDataEachStep,
+  Random::Engine& engine
+);
+
 /** @brief Main and parallel implementation of Distance Geometry. Generates an
  *   ensemble of 3D structures of a given Molecule
  *
@@ -128,6 +138,16 @@ std::vector<
   outcome::result<AngstromPositions>
 > run(
   const Molecule& molecule,
+  unsigned numConformers,
+  const Configuration& configuration,
+  boost::optional<unsigned> seedOption
+);
+
+std::vector<
+  outcome::result<AngstromPositions>
+> runG2S(
+  const Molecule& molecule,
+  const Eigen::MatrixXd& distancebounds,
   unsigned numConformers,
   const Configuration& configuration,
   boost::optional<unsigned> seedOption

@@ -295,6 +295,13 @@ MASM_EXPORT outcome::result<Utils::PositionCollection> generateConformation(
   const DistanceGeometry::Configuration& configuration = DistanceGeometry::Configuration {}
 );
 
+MASM_EXPORT outcome::result<Utils::PositionCollection> generateG2SConformation(
+  const Molecule& molecule,
+  const Eigen::MatrixXd& distancebounds,
+  unsigned seed,
+  const DistanceGeometry::Configuration& configuration = DistanceGeometry::Configuration {}
+);
+
 } // namespace Molassembler
 } // namespace Scine
 
